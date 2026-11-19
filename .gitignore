@@ -1,0 +1,11 @@
+# secrets — never commit
+*.json
+!**/abi.json
+.env
+.env.*
+test-wallet.json
+test-payee.json
+
+# foundry build output
+out/
+cache/

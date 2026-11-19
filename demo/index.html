@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>InvoiceEscrow — Aevum Testnet Demo</title>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.6rem; margin-bottom: 0; }
+  h2 { font-size: 1.15rem; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  .sub { color: #555; margin-top: 4px; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-top: 12px; }
+  label { display: block; font-weight: 600; margin-top: 12px; font-size: 0.9rem; }
+  input[type="text"], input[type="number"] { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; border: 1px solid #bbb; border-radius: 6px; font-size: 1rem; }
+  button { padding: 9px 16px; margin-top: 12px; margin-right: 8px; border: none; border-radius: 6px; background: #2563eb; color: #fff; font-size: 1rem; cursor: pointer; }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+  button.secondary { background: #e5e7eb; color: #111; }
+  button.danger { background: #b91c1c; }
+  .mono { font-family: ui-monospace, monospace; word-break: break-all; }
+  .muted { color: #555; font-size: 0.9rem; }
+  .status { padding: 10px 12px; border-radius: 6px; margin-top: 12px; display: none; }
+  .status.ok { display: block; background: #dcfce7; }
+  .status.err { display: block; background: #fee2e2; }
+  .status.info { display: block; background: #dbeafe; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.8rem; font-weight: 700; }
+  .badge.funded { background: #fef3c7; }
+  .badge.released { background: #dcfce7; }
+  .badge.refunded { background: #e5e7eb; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  td { padding: 4px 8px 4px 0; vertical-align: top; }
+  td:first-child { color: #555; white-space: nowrap; }
+  .warn { background: #fffbeb; border: 1px solid #f59e0b; border-radius: 6px; padding: 10px 12px; margin-top: 12px; font-size: 0.9rem; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 200px; }
+</style>
+</head>
+<body>
+
+<h1>InvoiceEscrow</h1>
+<p class="sub">tUSD8 invoice escrow on Aevum Testnet (chain ID 44005) — Aevum Builder Challenge #1.</p>
+<p class="sub">How it works: a payer locks tUSD8 in the contract for an invoice. The payee confirms
+receipt and the funds release to them. If the deadline passes with no confirmation, the payer
+can claim a refund. No admin, no fees.</p>
+
+<div class="warn" id="deploy-warning">
+  <strong>Contract address not yet confirmed on the live testnet.</strong><br>
+  The address below is the <em>expected</em> deployment address (same deployer + nonce 0 as the
+  local fork test). Confirm it after the real deploy — if it differs, paste the real address
+  below or open the page with <span class="mono">?contract=0x…</span>.
+</div>
+
+<h2>1. Contract</h2>
+<div class="card">
+  <label for="contract-input">InvoiceEscrow contract address</label>
+  <input type="text" id="contract-input" spellcheck="false">
+  <button class="secondary" id="apply-contract-btn">Use this contract</button>
+  <span class="muted" id="contract-status"></span>
+  <div class="muted" style="margin-top:8px">
+    tUSD8 token: <span class="mono" id="token-address"></span> (6 decimals)<br>
+    Explorer: <a id="explorer-link" href="https://explorer-test.qday.info/" target="_blank" rel="noopener">explorer-test.qday.info</a>
+  </div>
+</div>
+
+<h2>2. Wallet</h2>
+<div class="card">
+  <button id="connect-btn">Connect Wallet</button>
+  <span class="muted" id="network-status">Not connected.</span>
+  <div id="wallet-info" style="display:none; margin-top:12px">
+    <table>
+      <tr><td>Address</td><td class="mono" id="wallet-address"></td></tr>
+      <tr><td>tQDAY balance</td><td id="native-balance"></td></tr>
+      <tr><td>tUSD8 balance</td><td id="token-balance"></td></tr>
+    </table>
+    <button class="secondary" id="refresh-balances-btn">Refresh balances</button>
+  </div>
+</div>
+
+<h2>3. Create invoice</h2>
+<div class="card">
+  <p class="muted">The payer locks tUSD8 in escrow. Two transactions are needed:
+  first approve the contract to pull the exact amount, then create &amp; lock the invoice.</p>
+  <label for="payee-input">Payee address</label>
+  <input type="text" id="payee-input" placeholder="0x…" spellcheck="false">
+  <div class="row">
+    <div>
+      <label for="amount-input">Amount (tUSD8)</label>
+      <input type="number" id="amount-input" min="0" step="0.000001" placeholder="e.g. 10">
+    </div>
+    <div>
+      <label for="days-input">Deadline (days from now)</label>
+      <input type="number" id="days-input" min="1" step="1" value="7">
+    </div>
+  </div>
+  <label for="desc-input">Description</label>
+  <input type="text" id="desc-input" placeholder="e.g. Invoice #42 — website design" spellcheck="false">
+  <div>
+    <button id="approve-btn" disabled>1. Approve tUSD8</button>
+    <button id="create-btn" disabled>2. Create &amp; Lock Invoice</button>
+  </div>
+  <div class="muted" id="allowance-info" style="margin-top:8px"></div>
+</div>
+
+<h2>4. Invoices</h2>
+<div class="card">
+  <button class="secondary" id="refresh-invoices-btn">Refresh invoices</button>
+  <span class="muted" id="invoice-count-label"></span>
+  <div id="invoice-list" style="margin-top:12px">
+    <p class="muted">No invoices loaded yet. Connect your wallet and press Refresh.</p>
+  </div>
+</div>
+
+<div class="status" id="status-box" role="status"></div>
+
+<script>
+"use strict";
+
+// ---- Constants (Aevum Testnet) ----
+const CHAIN_ID = 44005;
+const CHAIN_ID_HEX = "0xABE5"; // 44005 in hex
+const RPC_URL = "https://rpc-test.qday.info";
+const EXPLORER_URL = "https://explorer-test.qday.info";
+const TOKEN_ADDRESS = "0x456569838f1d43009A91ebA4263147Afd7233483";
+const TOKEN_DECIMALS = 6;
+const DEFAULT_CONTRACT = "0xaEd0EBf4B742eC853a8E50b87d1905a2680e9935";
+
+// ---- ABIs ----
+const ERC20_ABI = [
+  "function balanceOf(address account) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+  "function symbol() view returns (string)"
+];
+let ESCROW_ABI = null; // loaded from abi.json at startup
+
+// ---- State ----
+let provider = null;      // ethers.BrowserProvider (wallet)
+let readProvider = null;  // ethers.JsonRpcProvider (public RPC, for reads before connect)
+let signer = null;
+let account = null;
+let escrow = null;        // read/write contract (connected to signer when available)
+let token = null;
+let contractAddress = DEFAULT_CONTRACT;
+
+// ---- DOM helpers ----
+const $ = (id) => document.getElementById(id);
+const statusBox = $("status-box");
+
+function showStatus(message, kind) {
+  statusBox.className = "status " + (kind || "info");
+  statusBox.innerHTML = message;
+}
+function clearStatus() {
+  statusBox.className = "status";
+  statusBox.innerHTML = "";
+}
+function txLink(hash) {
+  return '<a href="' + EXPLORER_URL + '/tx/' + hash + '" target="_blank" rel="noopener">' + hash + '</a>';
+}
+function shortAddr(addr) {
+  return addr.slice(0, 6) + "…" + addr.slice(-4);
+}
+function fmtAmount(raw) {
+  return ethers.formatUnits(raw, TOKEN_DECIMALS) + " tUSD8";
+}
+function fmtDeadline(ts) {
+  const d = new Date(Number(ts) * 1000);
+  return d.toLocaleString() + " (" + (d.getTime() > Date.now() ? "in the future" : "passed") + ")";
+}
+function friendlyError(err) {
+  // Turn common ethers / revert errors into plain language.
+  const msg = (err && (err.reason || err.message || String(err))) || "Unknown error";
+  if (/user rejected|User denied/i.test(msg)) return "Transaction rejected in your wallet — nothing was sent.";
+  if (/insufficient funds/i.test(msg)) return "Not enough tQDAY to pay gas. Get testnet tQDAY from the faucet first.";
+  if (/NotPayee/i.test(msg)) return "Only the payee can confirm receipt of this invoice.";
+  if (/NotPayer/i.test(msg)) return "Only the payer can claim a refund for this invoice.";
+  if (/NotFunded/i.test(msg)) return "This invoice is no longer Funded (already released or refunded).";
+  if (/DeadlineNotReached/i.test(msg)) return "The deadline has not passed yet — a refund is not available.";
+  if (/DeadlineInPast/i.test(msg)) return "The deadline must be in the future.";
+  if (/ZeroAmount/i.test(msg)) return "The amount must be greater than zero.";
+  if (/SameParty/i.test(msg)) return "Payer and payee cannot be the same address.";
+  if (/ZeroAddress/i.test(msg)) return "That address is not valid (zero address).";
+  if (/TransferFailed|ERC20: transfer amount exceeds balance|insufficient allowance/i.test(msg))
+    return "The token transfer failed — check your tUSD8 balance and that you approved the exact amount first.";
+  if (/network|Failed to fetch|NETWORK_ERROR/i.test(msg))
+    return "Network error talking to the Aevum testnet RPC. Check your connection and try again.";
+  return "Error: " + msg;
+}
+
+// ---- Contract setup ----
+function setContractAddress(addr) {
+  if (!ethers.isAddress(addr)) {
+    showStatus("That is not a valid contract address.", "err");
+    return false;
+  }
+  contractAddress = ethers.getAddress(addr);
+  $("contract-input").value = contractAddress;
+  if (ESCROW_ABI) {
+    const runner = signer || readProvider;
+    escrow = new ethers.Contract(contractAddress, ESCROW_ABI, runner);
+    token = new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, runner);
+  }
+  $("contract-status").textContent = contractAddress === DEFAULT_CONTRACT
+    ? "Using expected deployment address (unconfirmed)."
+    : "Using custom contract address.";
+  return true;
+}
+
+async function loadAbi() {
+  const res = await fetch("abi.json");
+  if (!res.ok) throw new Error("Could not load abi.json (" + res.status + ")");
+  ESCROW_ABI = await res.json();
+}
+
+// ---- Reads ----
+async function refreshBalances() {
+  if (!account) return;
+  try {
+    const native = await provider.getBalance(account);
+    const tusd = await token.balanceOf(account);
+    $("native-balance").textContent = ethers.formatEther(native) + " tQDAY";
+    $("token-balance").textContent = fmtAmount(tusd);
+  } catch (err) {
+    showStatus("Could not read balances. " + friendlyError(err), "err");
+  }
+}
+
+async function refreshAllowanceInfo() {
+  if (!account || !token) { $("allowance-info").textContent = ""; return; }
+  try {
+    const allowance = await token.allowance(account, contractAddress);
+    $("allowance-info").textContent = "Current allowance for this contract: " + fmtAmount(allowance) + ".";
+  } catch (err) {
+    $("allowance-info").textContent = "";
+  }
+}
+
+const STATUS_NAMES = ["Funded", "Released", "Refunded"];
+const STATUS_CLASSES = ["funded", "released", "refunded"];
+
+async function refreshInvoices() {
+  const listEl = $("invoice-list");
+  if (!escrow) { listEl.innerHTML = '<p class="muted">Contract not loaded yet.</p>'; return; }
+  listEl.innerHTML = '<p class="muted">Loading invoices…</p>';
+  try {
+    const count = await escrow.invoiceCount();
+    $("invoice-count-label").textContent = Number(count) + " invoice(s) on-chain.";
+    if (Number(count) === 0) {
+      listEl.innerHTML = '<p class="muted">No invoices yet. Create the first one above.</p>';
+      return;
+    }
+    listEl.innerHTML = "";
+    // Live Aevum Testnet cannot execute getInvoice() (the chain rejects the
+    // MCOPY opcode the compiler uses to return the struct's string field),
+    // so rebuild the list from events when the direct read fails.
+    let eventMap = null;
+    async function invoiceFromEvents(id) {
+      if (!eventMap) {
+        eventMap = {};
+        const created = await escrow.queryFilter(escrow.filters.InvoiceCreated());
+        for (const e of created) {
+          eventMap[Number(e.args.id)] = {
+            payer: e.args.payer, payee: e.args.payee, amount: e.args.amount,
+            deadline: e.args.deadline, status: 0,
+            description: "(not readable on this chain)",
+          };
+        }
+        for (const e of await escrow.queryFilter(escrow.filters.InvoiceReleased())) {
+          if (eventMap[Number(e.args.id)]) eventMap[Number(e.args.id)].status = 1;
+        }
+        for (const e of await escrow.queryFilter(escrow.filters.InvoiceRefunded())) {
+          if (eventMap[Number(e.args.id)]) eventMap[Number(e.args.id)].status = 2;
+        }
+      }
+      return eventMap[id] || null;
+    }
+    // Newest first.
+    for (let i = Number(count) - 1; i >= 0; i--) {
+      let inv = null;
+      try {
+        inv = await escrow.getInvoice(i);
+      } catch (err) {
+        inv = await invoiceFromEvents(i);
+      }
+      if (!inv) continue;
+      const status = Number(inv.status);
+      const deadlinePassed = Number(inv.deadline) * 1000 <= Date.now();
+      const isPayee = account && inv.payee.toLowerCase() === account.toLowerCase();
+      const isPayer = account && inv.payer.toLowerCase() === account.toLowerCase();
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML =
+        '<table>' +
+        '<tr><td>ID</td><td><strong>#' + i + '</strong> <span class="badge ' + STATUS_CLASSES[status] + '">' + STATUS_NAMES[status] + '</span></td></tr>' +
+        '<tr><td>Payer</td><td class="mono">' + inv.payer + (isPayer ? ' (you)' : '') + '</td></tr>' +
+        '<tr><td>Payee</td><td class="mono">' + inv.payee + (isPayee ? ' (you)' : '') + '</td></tr>' +
+        '<tr><td>Amount</td><td>' + fmtAmount(inv.amount) + '</td></tr>' +
+        '<tr><td>Deadline</td><td>' + fmtDeadline(inv.deadline) + '</td></tr>' +
+        '<tr><td>Description</td><td>' + escapeHtml(inv.description || "(none)") + '</td></tr>' +
+        '</table>';
+
+      if (status === 0 && isPayee) {
+        const btn = document.createElement("button");
+        btn.textContent = "Confirm Receipt (release funds to payee)";
+        btn.onclick = () => confirmReceipt(i);
+        card.appendChild(btn);
+      }
+      if (status === 0 && isPayer && deadlinePassed) {
+        const btn = document.createElement("button");
+        btn.className = "danger";
+        btn.textContent = "Claim Refund (deadline passed)";
+        btn.onclick = () => claimRefund(i);
+        card.appendChild(btn);
+      }
+      if (status === 0 && isPayer && !deadlinePassed) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = "Refund becomes available after the deadline passes.";
+        card.appendChild(note);
+      }
+      listEl.appendChild(card);
+    }
+  } catch (err) {
+    listEl.innerHTML = '<p class="muted">Could not load invoices.</p>';
+    showStatus("Could not load invoices. " + friendlyError(err), "err");
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+// ---- Wallet ----
+async function connectWallet() {
+  clearStatus();
+  if (!window.ethereum) {
+    showStatus("No wallet found. Install MetaMask (or another EIP-1193 wallet) and reload this page.", "err");
+    return;
+  }
+  try {
+    provider = new ethers.BrowserProvider(window.ethereum);
+    // Ask the wallet to switch to Aevum Testnet, adding the chain if needed.
+    try {
+      await window.ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: CHAIN_ID_HEX }]
+      });
+    } catch (switchErr) {
+      if (switchErr && switchErr.code === 4902) {
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: CHAIN_ID_HEX,
+            chainName: "Aevum Testnet",
+            rpcUrls: [RPC_URL],
+            blockExplorerUrls: [EXPLORER_URL],
+            nativeCurrency: { name: "tQDAY", symbol: "tQDAY", decimals: 18 }
+          }]
+        });
+      } else {
+        throw switchErr;
+      }
+    }
+    signer = await provider.getSigner();
+    account = await signer.getAddress();
+    const network = await provider.getNetwork();
+    if (Number(network.chainId) !== CHAIN_ID) {
+      showStatus("Your wallet is on chain " + network.chainId + ", not Aevum Testnet (44005). Please switch networks.", "err");
+      return;
+    }
+    // Reconnect contracts through the signer so writes are signed.
+    escrow = new ethers.Contract(contractAddress, ESCROW_ABI, signer);
+    token = new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, signer);
+
+    $("wallet-address").textContent = account;
+    $("wallet-info").style.display = "block";
+    $("network-status").textContent = "Connected to Aevum Testnet (44005).";
+    $("connect-btn").textContent = "Connected: " + shortAddr(account);
+    $("approve-btn").disabled = false;
+    $("create-btn").disabled = false;
+    await refreshBalances();
+    await refreshAllowanceInfo();
+    await refreshInvoices();
+    showStatus("Wallet connected: " + account, "ok");
+  } catch (err) {
+    showStatus("Could not connect wallet. " + friendlyError(err), "err");
+  }
+}
+
+// ---- Writes ----
+function parseCreateForm() {
+  const payee = $("payee-input").value.trim();
+  const amountStr = $("amount-input").value.trim();
+  const daysStr = $("days-input").value.trim();
+  const description = $("desc-input").value.trim();
+  if (!ethers.isAddress(payee)) throw new Error("Enter a valid payee address.");
+  if (!amountStr || Number(amountStr) <= 0) throw new Error("Enter an amount greater than zero.");
+  const days = Number(daysStr);
+  if (!daysStr || !Number.isFinite(days) || days <= 0) throw new Error("Enter a deadline of at least 1 day.");
+  const amount = ethers.parseUnits(amountStr, TOKEN_DECIMALS);
+  const deadline = Math.floor(Date.now() / 1000) + Math.floor(days) * 86400;
+  return { payee: ethers.getAddress(payee), amount, deadline, description };
+}
+
+async function approveToken() {
+  clearStatus();
+  if (!signer) { showStatus("Connect your wallet first.", "err"); return; }
+  let form;
+  try { form = parseCreateForm(); }
+  catch (err) { showStatus(friendlyError(err), "err"); return; }
+  try {
+    showStatus("Waiting for you to approve " + fmtAmount(form.amount) + " in your wallet…", "info");
+    const tx = await token.approve(contractAddress, form.amount);
+    showStatus("Approval submitted. Transaction: " + txLink(tx.hash) + " — waiting for confirmation…", "info");
+    await tx.wait();
+    await refreshAllowanceInfo();
+    await refreshBalances();
+    showStatus("Approved " + fmtAmount(form.amount) + " for the escrow contract. Transaction: " + txLink(tx.hash) + " — now press “Create &amp; Lock Invoice”.", "ok");
+  } catch (err) {
+    showStatus("Approval failed. " + friendlyError(err), "err");
+  }
+}
+
+async function createInvoice() {
+  clearStatus();
+  if (!signer) { showStatus("Connect your wallet first.", "err"); return; }
+  let form;
+  try { form = parseCreateForm(); }
+  catch (err) { showStatus(friendlyError(err), "err"); return; }
+  try {
+    showStatus("Waiting for you to confirm the invoice in your wallet…", "info");
+    const tx = await escrow.createInvoice(form.payee, form.amount, form.deadline, form.description);
+    showStatus("Invoice creation submitted. Transaction: " + txLink(tx.hash) + " — waiting for confirmation…", "info");
+    const receipt = await tx.wait();
+    // Find the InvoiceCreated event to report the new id.
+    let newId = null;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = escrow.interface.parseLog(log);
+        if (parsed && parsed.name === "InvoiceCreated") { newId = parsed.args.id; break; }
+      } catch (e) { /* log is from another contract */ }
+    }
+    await refreshBalances();
+    await refreshAllowanceInfo();
+    await refreshInvoices();
+    showStatus("Invoice " + (newId !== null ? "#" + newId + " " : "") + "created and " + fmtAmount(form.amount) +
+      " locked in escrow. Transaction: " + txLink(tx.hash), "ok");
+  } catch (err) {
+    showStatus("Could not create the invoice. " + friendlyError(err), "err");
+  }
+}
+
+async function confirmReceipt(id) {
+  clearStatus();
+  if (!signer) { showStatus("Connect your wallet first.", "err"); return; }
+  try {
+    showStatus("Waiting for you to confirm receipt in your wallet…", "info");
+    const tx = await escrow.confirmReceipt(id);
+    showStatus("Confirmation submitted. Transaction: " + txLink(tx.hash) + " — waiting for confirmation…", "info");
+    await tx.wait();
+    await refreshBalances();
+    await refreshInvoices();
+    showStatus("Receipt confirmed — invoice #" + id + " released to the payee. Transaction: " + txLink(tx.hash), "ok");
+  } catch (err) {
+    showStatus("Could not confirm receipt. " + friendlyError(err), "err");
+  }
+}
+
+async function claimRefund(id) {
+  clearStatus();
+  if (!signer) { showStatus("Connect your wallet first.", "err"); return; }
+  try {
+    showStatus("Waiting for you to confirm the refund claim in your wallet…", "info");
+    const tx = await escrow.claimRefund(id);
+    showStatus("Refund claim submitted. Transaction: " + txLink(tx.hash) + " — waiting for confirmation…", "info");
+    await tx.wait();
+    await refreshBalances();
+    await refreshInvoices();
+    showStatus("Refund claimed — invoice #" + id + " returned to the payer. Transaction: " + txLink(tx.hash), "ok");
+  } catch (err) {
+    showStatus("Could not claim the refund. " + friendlyError(err), "err");
+  }
+}
+
+// ---- Init ----
+async function init() {
+  $("token-address").textContent = TOKEN_ADDRESS;
+  // Contract address: ?contract=0x… overrides the default.
+  const params = new URLSearchParams(window.location.search);
+  const paramContract = params.get("contract");
+  $("contract-input").value = paramContract || DEFAULT_CONTRACT;
+  try {
+    await loadAbi();
+  } catch (err) {
+    showStatus("Failed to load abi.json — the page cannot talk to the contract. " + friendlyError(err), "err");
+    return;
+  }
+  readProvider = new ethers.JsonRpcProvider(RPC_URL);
+  if (!setContractAddress($("contract-input").value)) return;
+  // Read-only invoice list works even before connecting a wallet.
+  await refreshInvoices();
+
+  $("connect-btn").addEventListener("click", connectWallet);
+  $("refresh-balances-btn").addEventListener("click", refreshBalances);
+  $("refresh-invoices-btn").addEventListener("click", refreshInvoices);
+  $("approve-btn").addEventListener("click", approveToken);
+  $("create-btn").addEventListener("click", createInvoice);
+  $("apply-contract-btn").addEventListener("click", async () => {
+    if (!setContractAddress($("contract-input").value)) return;
+    await refreshInvoices();
+    if (account) { await refreshAllowanceInfo(); }
+    showStatus("Now using contract " + contractAddress, "ok");
+  });
+
+  // Keep the UI in sync if the user switches account/network in the wallet.
+  if (window.ethereum) {
+    window.ethereum.on("accountsChanged", () => window.location.reload());
+    window.ethereum.on("chainChanged", () => window.location.reload());
+  }
+}
+
+init();
+</script>
+</body>
+</html>
